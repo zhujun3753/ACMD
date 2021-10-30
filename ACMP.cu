@@ -1252,3 +1252,54 @@ void ACMP::RunPatchMatch()
     cudaMemcpy(costs_host, costs_cuda, sizeof(float) * width * height, cudaMemcpyDeviceToHost);
     CUDA_SAFE_CALL(cudaDeviceSynchronize());
 }
+
+void ACMP::edge_detect()
+{
+    const int width = cameras[0].width;
+    const int height = cameras[0].height;
+
+    dim3 grid_size_randinit;
+    grid_size_randinit.x = (width + 16 - 1) / 16;
+    grid_size_randinit.y=(height + 16 - 1) / 16;
+    grid_size_randinit.z = 1;
+    dim3 block_size_randinit;
+    block_size_randinit.x = 16;
+    block_size_randinit.y = 16;
+    block_size_randinit.z = 1;
+
+    int BLOCK_W = 32;
+    int BLOCK_H = (BLOCK_W / 2);
+    dim3 grid_size_checkerboard;
+    grid_size_checkerboard.x = (width + BLOCK_W - 1) / BLOCK_W;
+    grid_size_checkerboard.y= ( (height / 2) + BLOCK_H - 1) / BLOCK_H;
+    grid_size_checkerboard.z = 1;
+    dim3 block_size_checkerboard;
+    block_size_checkerboard.x = BLOCK_W;
+    block_size_checkerboard.y = BLOCK_H;
+    block_size_checkerboard.z = 1;
+
+    RandomInitialization<<<grid_size_randinit, block_size_randinit>>>(texture_objects_cuda, cameras_cuda, plane_hypotheses_cuda, costs_cuda, rand_states_cuda, selected_views_cuda, prior_planes_cuda, plane_masks_cuda, params);
+    // printf("RandomInitialization \n");
+    CUDA_SAFE_CALL(cudaDeviceSynchronize());
+
+    int num_iter=3; // *params.max_iterations
+    for (int i = 0; i < num_iter; ++i) {
+        RedPixelUpdate<<<grid_size_checkerboard, block_size_checkerboard>>>(texture_objects_cuda, texture_depths_cuda, cameras_cuda, plane_hypotheses_cuda, costs_cuda, rand_states_cuda, selected_views_cuda, prior_planes_cuda, plane_masks_cuda, params, i);
+        CUDA_SAFE_CALL(cudaDeviceSynchronize()); //! 该方法将停止CPU端线程的执行，直到GPU端完成之前CUDA的任务，包括kernel函数、数据拷贝等。
+        BlackPixelUpdate<<<grid_size_checkerboard, block_size_checkerboard>>>(texture_objects_cuda, texture_depths_cuda, cameras_cuda, plane_hypotheses_cuda, costs_cuda, rand_states_cuda, selected_views_cuda, prior_planes_cuda, plane_masks_cuda, params, i);
+        CUDA_SAFE_CALL(cudaDeviceSynchronize());
+        printf("iteration: %d\n", i);
+    }
+
+    GetDepthandNormal<<<grid_size_randinit, block_size_randinit>>>(cameras_cuda, plane_hypotheses_cuda, params);
+    CUDA_SAFE_CALL(cudaDeviceSynchronize());
+
+    BlackPixelFilter<<<grid_size_checkerboard, block_size_checkerboard>>>(cameras_cuda, plane_hypotheses_cuda, costs_cuda);
+    CUDA_SAFE_CALL(cudaDeviceSynchronize());
+    RedPixelFilter<<<grid_size_checkerboard, block_size_checkerboard>>>(cameras_cuda, plane_hypotheses_cuda, costs_cuda);
+    CUDA_SAFE_CALL(cudaDeviceSynchronize());
+
+    cudaMemcpy(plane_hypotheses_host, plane_hypotheses_cuda, sizeof(float4) * width * height, cudaMemcpyDeviceToHost);
+    cudaMemcpy(costs_host, costs_cuda, sizeof(float) * width * height, cudaMemcpyDeviceToHost);
+    CUDA_SAFE_CALL(cudaDeviceSynchronize());
+}

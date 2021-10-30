@@ -446,6 +446,7 @@ void ACMP::InuputInitialization(const std::string &dense_folder, const Problem &
     // ! 读取灰度图像信息和相机信息
     images.clear();
     cameras.clear();
+    masks.clear(); //* new
 
     std::string image_folder = dense_folder + std::string("/images");
     std::string cam_folder = dense_folder + std::string("/cams_1");
@@ -456,6 +457,8 @@ void ACMP::InuputInitialization(const std::string &dense_folder, const Problem &
     cv::Mat image_float;
     image_uint.convertTo(image_float, CV_32FC1); // * CV_<bit_depth>(S|U|F)C<number_of_channels> 1通道32位浮点型
     images.push_back(image_float);
+    cv::Mat mask = cv::Mat::zeros(cv::Size(image_float.cols,image_float.rows),CV_32FC1); //* new
+    masks.push_back(mask); //* new
     std::stringstream cam_path;
     cam_path << cam_folder << "/" << std::setw(8) << std::setfill('0') << problem.ref_image_id << "_cam.txt";
     Camera camera = ReadCamera(cam_path.str());
@@ -647,6 +650,36 @@ void ACMP::CudaSpaceInitialization(const std::string &dense_folder, const Proble
         cudaMemcpy(plane_hypotheses_cuda, plane_hypotheses_host, sizeof(float4) * width * height, cudaMemcpyHostToDevice);
         cudaMemcpy(costs_cuda, costs_host, sizeof(float) * width * height, cudaMemcpyHostToDevice);
     }
+    
+    if (params.edge_detect) {
+        for (int i = 0; i < num_images; ++i) {
+            int rows = masks[i].rows;
+            int cols = masks[i].cols;
+
+            cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
+            cudaMallocArray(&cuMaskArray[i], &channelDesc, cols, rows);
+            cudaMemcpy2DToArray (cuMaskArray[i], 0, 0, masks[i].ptr<float>(), masks[i].step[0], cols*sizeof(float), rows, cudaMemcpyHostToDevice);
+
+            struct cudaResourceDesc resDesc;
+            memset(&resDesc, 0, sizeof(cudaResourceDesc));
+            resDesc.resType = cudaResourceTypeArray;
+            resDesc.res.array.array = cuMaskArray[i];
+
+            struct cudaTextureDesc texDesc;
+            memset(&texDesc, 0, sizeof(cudaTextureDesc));
+            texDesc.addressMode[0] = cudaAddressModeWrap;
+            texDesc.addressMode[1] = cudaAddressModeWrap;
+            texDesc.filterMode = cudaFilterModeLinear;
+            texDesc.readMode  = cudaReadModeElementType;
+            texDesc.normalizedCoords = 0;
+
+            cudaCreateTextureObject(&(texture_masks_host.images[i]), &resDesc, &texDesc, NULL);
+        }
+        cudaMalloc((void**)&texture_masks_cuda, sizeof(cudaTextureObjects));
+        cudaMemcpy(texture_masks_cuda, &texture_masks_host, sizeof(cudaTextureObjects), cudaMemcpyHostToDevice);
+        
+    }
+
 }
 
 void ACMP::CudaPlanarPriorInitialization(const std::vector<float4> &PlaneParams, const cv::Mat_<float> &masks)

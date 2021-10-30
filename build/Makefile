@@ -56,17 +56,6 @@ CMAKE_BINARY_DIR = /home/zhujun/MVS/ACMP/build
 #=============================================================================
 # Targets provided globally by CMake.
 
-# Special rule for the target rebuild_cache
-rebuild_cache:
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "Running CMake to regenerate build system..."
-	/usr/bin/cmake -H$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR)
-.PHONY : rebuild_cache
-
-# Special rule for the target rebuild_cache
-rebuild_cache/fast: rebuild_cache
-
-.PHONY : rebuild_cache/fast
-
 # Special rule for the target edit_cache
 edit_cache:
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "No interactive CMake dialog available..."
@@ -77,6 +66,17 @@ edit_cache:
 edit_cache/fast: edit_cache
 
 .PHONY : edit_cache/fast
+
+# Special rule for the target rebuild_cache
+rebuild_cache:
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "Running CMake to regenerate build system..."
+	/usr/bin/cmake -H$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR)
+.PHONY : rebuild_cache
+
+# Special rule for the target rebuild_cache
+rebuild_cache/fast: rebuild_cache
+
+.PHONY : rebuild_cache/fast
 
 # The main all target
 all: cmake_check_build_system
@@ -122,6 +122,19 @@ ACMP: cmake_check_build_system
 ACMP/fast:
 	$(MAKE) -f CMakeFiles/ACMP.dir/build.make CMakeFiles/ACMP.dir/build
 .PHONY : ACMP/fast
+
+#=============================================================================
+# Target rules for targets named gauss_filter
+
+# Build rule for target.
+gauss_filter: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 gauss_filter
+.PHONY : gauss_filter
+
+# fast build rule for target.
+gauss_filter/fast:
+	$(MAKE) -f CMakeFiles/gauss_filter.dir/build.make CMakeFiles/gauss_filter.dir/build
+.PHONY : gauss_filter/fast
 
 ACMP.o: ACMP.cpp.o
 
@@ -183,9 +196,10 @@ help:
 	@echo "... all (the default if no target is provided)"
 	@echo "... clean"
 	@echo "... depend"
+	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... ACMP"
-	@echo "... edit_cache"
+	@echo "... gauss_filter"
 	@echo "... ACMP.o"
 	@echo "... ACMP.i"
 	@echo "... ACMP.s"

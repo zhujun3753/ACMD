@@ -97,6 +97,43 @@ clean: CMakeFiles/ACMP.dir/clean
 .PHONY : clean
 
 #=============================================================================
+# Target rules for target CMakeFiles/gauss_filter.dir
+
+# All Build rule for target.
+CMakeFiles/gauss_filter.dir/all:
+	$(MAKE) -f CMakeFiles/gauss_filter.dir/build.make CMakeFiles/gauss_filter.dir/depend
+	$(MAKE) -f CMakeFiles/gauss_filter.dir/build.make CMakeFiles/gauss_filter.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/home/zhujun/MVS/ACMP/build/CMakeFiles --progress-num=5,6 "Built target gauss_filter"
+.PHONY : CMakeFiles/gauss_filter.dir/all
+
+# Include target in all.
+all: CMakeFiles/gauss_filter.dir/all
+
+.PHONY : all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/gauss_filter.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/zhujun/MVS/ACMP/build/CMakeFiles 2
+	$(MAKE) -f CMakeFiles/Makefile2 CMakeFiles/gauss_filter.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/zhujun/MVS/ACMP/build/CMakeFiles 0
+.PHONY : CMakeFiles/gauss_filter.dir/rule
+
+# Convenience name for target.
+gauss_filter: CMakeFiles/gauss_filter.dir/rule
+
+.PHONY : gauss_filter
+
+# clean rule for target.
+CMakeFiles/gauss_filter.dir/clean:
+	$(MAKE) -f CMakeFiles/gauss_filter.dir/build.make CMakeFiles/gauss_filter.dir/clean
+.PHONY : CMakeFiles/gauss_filter.dir/clean
+
+# clean rule for target.
+clean: CMakeFiles/gauss_filter.dir/clean
+
+.PHONY : clean
+
+#=============================================================================
 # Special targets to cleanup operation of make.
 
 # Special rule to run CMake to check the build system integrity.

@@ -333,7 +333,6 @@ void single_depth(std::string &dense_folder, const std::vector<Problem> &problem
     StoreColorPlyFileBinaryPointCloud (ply_path, PointCloud);
 }
 
-
 void RunFusion(std::string &dense_folder, const std::vector<Problem> &problems, bool geom_consistency)
 {
     size_t num_images = problems.size();
@@ -520,7 +519,7 @@ int main(int argc, char** argv)
     // }
 
     // RunFusion(dense_folder, problems, geom_consistency);
-    single_depth(dense_folder, problems, geom_consistency);
+    // single_depth(dense_folder, problems, geom_consistency);
 
 
     return 0;

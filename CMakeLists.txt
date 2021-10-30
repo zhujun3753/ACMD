@@ -41,8 +41,8 @@ cuda_add_executable(
     main.cpp
     )
 
+cuda_add_executable(gauss_filter gauss_filter.cu)
 # For linking ...
 # Specify target & libraries to link it with
-target_link_libraries(ACMP
-    ${OpenCV_LIBS}
-    )
+target_link_libraries(ACMP    ${OpenCV_LIBS}    )
+target_link_libraries(gauss_filter ${OpenCV_LIBS} )

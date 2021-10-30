@@ -9,6 +9,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from PIL import Image
 import copy
+import time
 # read an image
 def read_img(filename,denoising=False):
     # img = Image.open(filename) #! RGB
@@ -20,302 +21,10 @@ def read_img(filename,denoising=False):
     np_img = np.array(img, dtype=np.float32) / 255.
     original_h, original_w, _ = np_img.shape
     # np_img = cv2.resize(np_img, img_wh, interpolation=cv2.INTER_LINEAR)
-    
     return np_img, original_h, original_w
-def region_seg(scan_folder, ref_view,prt_img=False):
-    use_new_depth=False
-    import cv2
-    try:
-        ref_img_orig, _, _ = read_img(os.path.join(scan_folder,'edge_detect/{:0>8}.jpg'.format(ref_view)),denoising=False)
-    except:
-        print('region_seg error')
-        return False
-    ref_img = cv2.cvtColor(ref_img_orig, cv2.COLOR_RGB2BGR) #! plt也是BGR
-    # ref_lines_file_path=os.path.join(scan_folder, 'images/save_lines/{:0>8}_lines.txt'.format(ref_view))
-    # ref_lines = np.loadtxt(ref_lines_file_path,delimiter=',')
-    # ref_img_orig=plot_lines(ref_img_orig,ref_lines,change_color=False)
-    ref_img=copy.deepcopy(ref_img_orig)
-    ref_img_gray = cv2.cvtColor(ref_img,cv2.COLOR_RGB2GRAY)
-    save_dir=os.path.join(scan_folder, "edge_detect/region_seg")
-    mask_save_dir=os.path.join(scan_folder, "edge_detect/region_seg_mask")
-    os.makedirs(save_dir, exist_ok=True)
-    os.makedirs(mask_save_dir, exist_ok=True)
-    mask_filename=os.path.join(mask_save_dir,"{:0>8}_region_seg_mask.npy".format(ref_view))
-    height,width,_=ref_img.shape
-    patchsize=10
-    mask=np.zeros((height,width),dtype=np.float32)
-    
-    if os.path.exists(mask_filename)  and 0:
-        mask=np.load(mask_filename)
-        # mask=np.cv2.imread(mask_filename)
-    else:
-        # start_time=time.time()
-        seg_values={}
-        for row in tqdm(range(patchsize,height-patchsize)):
-            #! 基于相邻灰度差异的方式
-            near_gray_gap=-np.ones((width,)).astype(np.float32) #*初值全为-1
-            for col in range(patchsize,width-patchsize):
-                patch_src_i=ref_img_gray[row,col-patchsize:col+patchsize]
-                near_gray_gap[col]=abs(patch_src_i.max()-patch_src_i.min())
-            near_gray_gap[near_gray_gap<0]=near_gray_gap.max()
-            simi_pixel=np.where(near_gray_gap<0.1)[0] #! 0.05
-            pixel_gap=np.ones_like(simi_pixel)*2
-            pixel_gap[1:]=simi_pixel[1:]-simi_pixel[:-1]
-            seg_start=np.where(pixel_gap>1)[0]
-            pixel_gap=np.ones_like(simi_pixel)*2
-            pixel_gap[:-1]=simi_pixel[1:]-simi_pixel[:-1]
-            seg_end=np.where(pixel_gap>1)[0]
-            seg_len=seg_end-seg_start
-            seg_valid=seg_len>width*0.01
-            seg_start_valid=seg_start[seg_valid] # simi_pixel的分段信息！！
-            seg_end_valid=seg_end[seg_valid]
-            for seg_i in range(len(seg_end_valid)):
-                mask[row,simi_pixel[seg_start_valid[seg_i]:seg_end_valid[seg_i]+1]]=row*width+simi_pixel[seg_start_valid[seg_i]]
-                seg_values[row*width+simi_pixel[seg_start_valid[seg_i]]]=len(simi_pixel[seg_start_valid[seg_i]:seg_end_valid[seg_i]+1])
-        #* 中间结果
-        # mask_color=cv2.applyColorMap(cv2.convertScaleAbs(mask/mask.max()*255,alpha=1),cv2.COLORMAP_JET) #! 彩色深度图
-        # Image.fromarray(mask_color).save(os.path.join(save_dir, "{:0>8}_mask0.png".format(ref_view)))
-        # print('行分割时间:',time.time()-start_time)
-        for row in tqdm(range(patchsize,height-patchsize)):
-            mask_row_i=mask[row,:]
-            mask_row_i1=mask[row+1,:]
-            simi_mask_index=np.logical_and(mask_row_i>0,mask_row_i1>0)
-            mask_valid_seg=mask_row_i*simi_mask_index
-            mask_valid_seg1=mask_row_i1*simi_mask_index
-            for i, mask_value in enumerate(np.unique(mask_valid_seg)):
-                if mask_value==0: continue
-                mask_value_index=np.where(mask_valid_seg==mask_value)[0]
-                if len(mask_value_index)<width*0.01:continue
-                mask_value1=mask_valid_seg1[mask_value_index[0]]
-                patch_src_i=ref_img[row,mask_value_index,:]
-                patch_ref_i=ref_img[row+1,mask_value_index,:]
-                ncc_errors=np.mean(
-                    np.multiply((patch_src_i-np.mean(patch_src_i)),(patch_ref_i-np.mean(patch_ref_i))))/(np.finfo(np.float32).eps+np.std(patch_src_i)*np.std(patch_ref_i))
-                if ncc_errors>0.8:
-                    mask_row_i1[mask_row_i1==mask_value1]=mask_value
-                    # if mask_value1==26718.0:print('ssssss',row,i)
-                    seg_values[mask_value]=seg_values[mask_value1]+seg_values[mask_value]
-                    seg_values[mask_value1]=0
-        # print('初步分割时间:',time.time()-start_time)
-        seg_values_filter={}
-        for key in seg_values.keys():
-            if seg_values[key]>0.005*width*height:
-                seg_values_filter[key]=seg_values[key]
-        # new_mask_values=list(range(40,len(seg_values_filter)+50))
-        # new_mask_values=list(range(10,200))
-        # shuffle(new_mask_values)
-        new_mask=np.zeros_like(mask,dtype=np.uint8)
-        for i,key in enumerate(seg_values_filter.keys()):
-            # new_mask[mask==key]=new_mask_values[i]
-            new_mask[mask==key]=i+1
-        mask=new_mask
-        # cv2.imwrite(mask_filename,mask)
-        np.save(mask_filename,mask)
-    if prt_img:
-        mask_color=cv2.applyColorMap(cv2.convertScaleAbs(mask/mask.max()*255,alpha=1),cv2.COLORMAP_JET) #! 彩色深度图
-        mask_color = cv2.cvtColor(mask_color,cv2.COLOR_BGR2RGB)
-        mask_0=np.zeros_like(mask_color)
-        mask_not0=(mask==1).astype(int)
-        mask_0[:,:,0],mask_0[:,:,1],mask_0[:,:,2]=mask_not0,mask_not0,mask_not0
-        mask_color=mask_color*mask_0
-        
-        img_cat=(ref_img_orig*255).astype(np.uint8).copy()
-        img_cat[mask==1]=(img_cat[mask==1]*0.5+mask_color[mask==1]*0.5).astype(np.uint8)
-        img_cat=cv2.hconcat([(ref_img_orig*255).astype(np.uint8),img_cat])
-        Image.fromarray(img_cat).save(os.path.join(save_dir, "{:0>8}_cat.png".format(ref_view)))
-    return True
-
-def edge_seg(scan_folder, ref_view,prt_img=False):
-    use_new_depth=False
-    import cv2
-    try:
-        ref_img_orig, _, _ = read_img(os.path.join(scan_folder,'edge_detect/{:0>8}_grad.jpg'.format(ref_view)),denoising=False)
-    except:
-        print('region_seg error')
-        return False
-    # ref_img = cv2.cvtColor(ref_img_orig, cv2.COLOR_RGB2BGR) #! plt也是BGR
-    # ref_lines_file_path=os.path.join(scan_folder, 'images/save_lines/{:0>8}_lines.txt'.format(ref_view))
-    # ref_lines = np.loadtxt(ref_lines_file_path,delimiter=',')
-    # ref_img_orig=plot_lines(ref_img_orig,ref_lines,change_color=False)
-    ref_img=copy.deepcopy(ref_img_orig)
-    ref_img_gray = cv2.cvtColor(ref_img,cv2.COLOR_RGB2GRAY)
-    save_dir=os.path.join(scan_folder, "edge_detect/region_seg")
-    mask_save_dir=os.path.join(scan_folder, "edge_detect/region_seg_mask")
-    os.makedirs(save_dir, exist_ok=True)
-    os.makedirs(mask_save_dir, exist_ok=True)
-    mask_filename=os.path.join(mask_save_dir,"{:0>8}_region_seg_mask.npy".format(ref_view))
-    height,width,_=ref_img.shape
-    patchsize=3
-    mask=np.zeros((height,width),dtype=np.float32)
-    drop_num=4
-    if os.path.exists(mask_filename)  and 0:
-        mask=np.load(mask_filename)
-        # mask=np.cv2.imread(mask_filename)
-    else:
-        # start_time=time.time()
-        seg_values={}
-        end_index=height-patchsize
-        # end_index=30
-        for row in tqdm(range(patchsize,end_index)):
-            near_gray_gap=-np.ones((width,)).astype(np.float32) #*初值全为-1
-            for col in range(patchsize,width-patchsize):
-                patch_src_i=ref_img_gray[row-1:row+2:,col-patchsize:col+patchsize]
-                patch_src_i=np.sort(patch_src_i.reshape(-1))[drop_num:-drop_num]
-                near_gray_gap[col]=abs(patch_src_i.max()-patch_src_i.min())
-            near_gray_gap[near_gray_gap<0]=near_gray_gap.max()
-            simi_pixel=np.where(near_gray_gap<0.1)[0] #! 0.05
-            pixel_gap=np.ones_like(simi_pixel)*2
-            pixel_gap[1:]=simi_pixel[1:]-simi_pixel[:-1]
-            seg_start=np.where(pixel_gap>1)[0]
-            pixel_gap=np.ones_like(simi_pixel)*2
-            pixel_gap[:-1]=simi_pixel[1:]-simi_pixel[:-1]
-            seg_end=np.where(pixel_gap>1)[0]
-            seg_len=seg_end-seg_start
-            seg_valid=seg_len>width*0.01
-            seg_start_valid=seg_start[seg_valid] # simi_pixel的分段信息！！
-            seg_end_valid=seg_end[seg_valid]
-            for seg_i in range(len(seg_end_valid)):
-                mask[row,simi_pixel[seg_start_valid[seg_i]:seg_end_valid[seg_i]+1]]=row*width+simi_pixel[seg_start_valid[seg_i]]
-                seg_values[row*width+simi_pixel[seg_start_valid[seg_i]]]=len(simi_pixel[seg_start_valid[seg_i]:seg_end_valid[seg_i]+1])
-        #* 中间结果
-        # mask_color=cv2.applyColorMap(cv2.convertScaleAbs(mask/mask.max()*255,alpha=1),cv2.COLORMAP_JET) #! 彩色深度图
-        # Image.fromarray(mask_color).save(os.path.join(save_dir, "{:0>8}_mask0.png".format(ref_view)))
-        # print('行分割时间:',time.time()-start_time)
-        for row in tqdm(range(patchsize,end_index)):
-            mask_row_i=mask[row,:]
-            mask_row_i1=mask[row+1,:]
-            # simi_mask_index=np.logical_and(mask_row_i>0,mask_row_i1>0)
-            simi_mask_index=mask_row_i1>0
-            mask_valid_seg=mask_row_i*simi_mask_index
-            mask_valid_seg1=mask_row_i1*simi_mask_index
-            for i, mask_value1 in enumerate(np.unique(mask_valid_seg1)):
-                if mask_value1==0: continue
-                mask_value1_index=np.where(mask_valid_seg1==mask_value1)[0] #* 下一行的每个分段
-                if len(mask_value1_index)<width*0.01:continue
-                mask_valid_seg=mask_row_i[mask_value1_index] #* 上一行对应分段
-                vals = np.unique(mask_valid_seg[mask_valid_seg>0])
-                if len(vals)==0:
-                    continue
-                num_values=np.array([len(mask_valid_seg[mask_valid_seg==v]) for v in vals])
-                mask_value=vals[num_values==max(num_values)] #* 以数量最多的为准
-                mask_value=mask_value[0]
-                # mask_value = vals[np.argmax(counts)] #* 得到上一段对应值
-                mask_value_index=np.logical_and(mask_valid_seg1==mask_value1,mask_row_i==mask_value)
-                if sum(mask_value_index)<width*0.01:continue
-                # pdb.set_trace()
-                patch_src_i=ref_img[row,mask_value_index,:]
-                patch_ref_i=ref_img[row+1,mask_value_index,:]
-                # pdb.set_trace()
-                # ncc_errors=np.mean(
-                #     np.multiply((patch_src_i-np.mean(patch_src_i)),(patch_ref_i-np.mean(patch_ref_i))))/(np.finfo(np.float32).eps+np.std(patch_src_i)*np.std(patch_ref_i))
-                # if ncc_errors>0.4:
-                mask_row_i1[mask_row_i1==mask_value1]=mask_value
-                # pdb.set_trace()
-                # if mask_value1==26718.0:print('ssssss',row,i)
-                seg_values[mask_value]=seg_values[mask_value1]+seg_values[mask_value]
-                seg_values[mask_value1]=0
-        # print('初步分割时间:',time.time()-start_time)
-        seg_values_filter={}
-        for key in seg_values.keys():
-            if seg_values[key]>0.005*width*height:
-                seg_values_filter[key]=seg_values[key]
-        # new_mask_values=list(range(40,len(seg_values_filter)+50))
-        # new_mask_values=list(range(10,200))
-        # shuffle(new_mask_values)
-        new_mask=np.zeros_like(mask,dtype=np.uint8)
-        for i,key in enumerate(seg_values_filter.keys()):
-            # new_mask[mask==key]=new_mask_values[i]
-            new_mask[mask==key]=i+1
-        mask=new_mask
-        # cv2.imwrite(mask_filename,mask)
-        np.save(mask_filename,mask)
-    if prt_img:
-        mask_color=cv2.applyColorMap(cv2.convertScaleAbs(mask/mask.max()*255,alpha=1),cv2.COLORMAP_JET) #! 彩色深度图
-        mask_color = cv2.cvtColor(mask_color,cv2.COLOR_BGR2RGB)
-        mask_0=np.zeros_like(mask_color)
-        valid_mask=mask!=0
-        mask_not0=(valid_mask).astype(int)
-        mask_0[:,:,0],mask_0[:,:,1],mask_0[:,:,2]=mask_not0,mask_not0,mask_not0
-        mask_color=mask_color*mask_0
-        
-        img_cat=(ref_img_orig*255).astype(np.uint8).copy()
-        img_cat[valid_mask]=(img_cat[valid_mask]*0.5+mask_color[valid_mask]*0.5).astype(np.uint8)
-        img_cat=cv2.hconcat([(ref_img_orig*255).astype(np.uint8),img_cat])
-        Image.fromarray(img_cat).save(os.path.join(save_dir, "{:0>8}_cat.png".format(ref_view)))
-        print("Saving to: ",os.path.join(save_dir, "{:0>8}_cat.png".format(ref_view)))
-    return True
 
 def norm(x, axis=0):
     return np.sqrt(np.sum(np.square(x), axis=axis))
-
-def patch_edge_detect(img):
-    img_gray=cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
-    height,width=img_gray.shape
-    w=16
-    step_size=4
-    mask=np.zeros_like(img_gray)
-    rect=False
-    prt=True
-    drop_num=2
-    invalid_width=20
-    row_min_max=[invalid_width,height-invalid_width]  #* [20,460]
-    col_min_max=[invalid_width,width-invalid_width]  #* [20,620]
-    for row in tqdm(range(row_min_max[0],row_min_max[1],step_size)):
-    # for row in range(row_min_max[0],row_min_max[1],step_size):
-        # if row!=290:
-        #     continue
-        for col in range(col_min_max[0],col_min_max[1],step_size):
-            # if col!=270:
-            #     rect=True
-            #     prt=True
-            #     continue
-            part=img_gray[row:row+w,col:col+w].copy()
-            #* 最值差
-            line=np.sort(part.reshape(-1))[drop_num:-drop_num];line_gap=line.max()-line.min()
-            value_gap=line.max()-line.min()
-            #* 梯度
-            part_blur=cv2.GaussianBlur(part,(5,5),20)
-            part_blur=cv2.GaussianBlur(part_blur,(5,5),20)
-            sobelx=cv2.Sobel(part_blur,cv2.CV_64F,1,0,ksize=3)
-            sobelx = cv2.convertScaleAbs(sobelx)
-            sobely=cv2.Sobel(part_blur,cv2.CV_64F,0,1,ksize=3)
-            sobely= cv2.convertScaleAbs(sobely)
-            sobelxy=cv2.addWeighted(sobelx,0.5,sobely,0.5,0)
-            sobelxy=cv2.GaussianBlur(sobelxy,(5,5),20)
-            theds=np.sort(sobelxy.reshape(-1))[-w]
-            theds_index=sobelxy<theds
-            sobelxy[theds_index]=0
-
-            gap_x=np.sum(np.sum(~theds_index,0)>0)
-            gap_y=np.sum(np.sum(~theds_index,1)>0)
-            if rect:
-            # if min(gap_x,gap_y)<w*0.3 and max(gap_x,gap_y)>w*0.7:
-                fig=plt.figure()
-                ax=fig.add_subplot(2,2,1)
-                ax.imshow(part,'gray')
-                ax.set_title('orig')
-                ax.axis('off')
-                ax=fig.add_subplot(2,2,2)
-                ax.imshow(part,'gray')
-                ax.set_title('blur')
-                ax.axis('off')
-                ax=fig.add_subplot(2,2,4)
-                ax.imshow(sobelxy,'gray')
-                ax.set_title('sobel')
-                ax.axis('off')
-                ax=fig.add_subplot(2,2,3)
-                plt.show()
-                cv2.rectangle(img,(col,row),(col+w,row+w),(0,0,0))
-                pdb.set_trace()
-            if prt and min(gap_x,gap_y)<w*0.4 and max(gap_x,gap_y)>w*0.6 and value_gap>30:# and np.sum(sobelxy>0)<1.5*w:
-                # print(value_gap,np.sum(sobelxy>0),sobelxy.max())
-                mask_part=mask[row:row+w,col:col+w]
-                mask_part[~theds_index]=1
-                for w_row in range(1,w-1):
-                    for w_col in range(1,w-1):
-                        if sobelxy[w_row,w_col]>0:
-                            cv2.circle(img, (col+w_col,row+w_row), 1, (0,0,0), 1)
-    return mask,img
 
 def row_edge_detect(img):
     img_gray=cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
@@ -324,19 +33,12 @@ def row_edge_detect(img):
     step_size=2
     mask=np.zeros_like(img_gray)
     rect=False
-    prt=True
-    drop_num=2
     invalid_width=20
     row_min_max=[invalid_width,height-invalid_width]  #* [20,460]
     col_min_max=[invalid_width,width-invalid_width]  #* [20,620]
-    for row in tqdm(range(row_min_max[0],row_min_max[1],step_size)):
-        # if row!=300:
-        #     rect=True
-        #     continue
+    # for row in tqdm(range(row_min_max[0],row_min_max[1],step_size)):
+    for row in (range(row_min_max[0],row_min_max[1],step_size)):
         part=img_gray[row:row+w,:].copy()
-        #* 最值差
-        line=np.sort(part.reshape(-1))[drop_num:-drop_num];line_gap=line.max()-line.min()
-        value_gap=line.max()-line.min()
         #* 梯度
         part_blur=cv2.GaussianBlur(part,(5,5),20)
         part_sum=np.sum(part_blur,0).astype(np.float32)
@@ -371,13 +73,78 @@ def row_edge_detect(img):
             ax.legend()
             plt.show()
             exit()
-    for col in tqdm(range(col_min_max[0],col_min_max[1],step_size)):
+    # for col in tqdm(range(col_min_max[0],col_min_max[1],step_size)):
+    for col in (range(col_min_max[0],col_min_max[1],step_size)):
         part=img_gray[:,col:col+w].copy().T
-        #* 最值差
-        line=np.sort(part.reshape(-1))[drop_num:-drop_num];line_gap=line.max()-line.min()
-        value_gap=line.max()-line.min()
         #* 梯度
         part_blur=cv2.GaussianBlur(part,(5,5),20)
+        part_sum=np.sum(part_blur,0).astype(np.float32)
+        part_sum_gard=abs(np.gradient(part_sum))
+        part_sum_for=np.zeros_like(part_sum_gard,dtype=np.float32)
+        part_sum_bak=np.zeros_like(part_sum_gard,dtype=np.float32)
+        part_sum_gard[part_sum_gard<20]=0
+        part_sum_for[1:-1]=part_sum_gard[2:]-part_sum_gard[1:-1]
+        part_sum_bak[1:-1]=part_sum_gard[1:-1]-part_sum_gard[0:-2]
+        part_sum_mul=part_sum_bak*part_sum_for
+        part_sum_gard[part_sum_mul>0]=0
+        mask[part_sum_gard>0,col:col+w]=1
+
+    return mask,img
+
+
+def test_edge_detect(img):
+    img_gray=cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+    img_gray=cv2.GaussianBlur(img_gray,(5,5),20)
+    height,width=img_gray.shape
+    w=9
+    step_size=2
+    mask=np.zeros_like(img_gray)
+    rect=False
+    invalid_width=20
+    row_min_max=[invalid_width,height-invalid_width]  #* [20,460]
+    col_min_max=[invalid_width,width-invalid_width]  #* [20,620]
+    for row in (range(row_min_max[0],row_min_max[1],step_size)):
+        part=img_gray[row:row+w,:].copy()
+        #* 梯度
+        # part_blur=cv2.GaussianBlur(part,(5,5),20)
+        part_blur=part
+        part_sum=np.sum(part_blur,0).astype(np.float32)
+        part_sum_gard=abs(np.gradient(part_sum))
+        part_sum_for=np.zeros_like(part_sum_gard,dtype=np.float32)
+        part_sum_bak=np.zeros_like(part_sum_gard,dtype=np.float32)
+        part_sum_gard[part_sum_gard<20]=0
+        part_sum_for[1:-1]=part_sum_gard[2:]-part_sum_gard[1:-1]
+        part_sum_bak[1:-1]=part_sum_gard[1:-1]-part_sum_gard[0:-2]
+        part_sum_mul=part_sum_bak*part_sum_for
+        part_sum_gard[part_sum_mul>0]=0
+        mask[row:row+w,part_sum_gard>0]=1
+        if rect:
+            fig=plt.figure()
+            ax=fig.add_subplot(2,2,1)
+            ax.imshow(part,'gray')
+            ax.set_title('orig')
+            ax.axis('off')
+            ax=fig.add_subplot(2,2,2)
+            ax.imshow(part_blur,'gray')
+            ax.set_title('blur')
+            ax.axis('off')
+            ax=fig.add_subplot(2,2,3)
+            cv2.rectangle(img,(col_min_max[0],row),(col_min_max[1],row+w),(0,0,0))
+            ax.imshow(img,'gray')
+            ax.set_title('sobel')
+            ax.axis('off')
+            ax=fig.add_subplot(2,2,4)
+            ax.plot(part_sum)
+            ax.plot(part_sum_gard*10,label='g')
+            # ax.plot(part_sum_gard_grad*10,label='gg')
+            ax.legend()
+            plt.show()
+            exit()
+    for col in (range(col_min_max[0],col_min_max[1],step_size)):
+        part=img_gray[:,col:col+w].copy().T
+        #* 梯度
+        # part_blur=cv2.GaussianBlur(part,(5,5),20)
+        part_blur=part
         part_sum=np.sum(part_blur,0).astype(np.float32)
         part_sum_gard=abs(np.gradient(part_sum))
         part_sum_for=np.zeros_like(part_sum_gard,dtype=np.float32)
@@ -402,7 +169,7 @@ def region_detect(edge_mask):
     region_dict={}
     row_min_max=[invalid_width,height-invalid_width]  #* [20,460]
     col_min_max=[invalid_width,width-invalid_width]  #* [20,620]
-    for row in tqdm(range(row_min_max[0],row_min_max[1],step_size)):
+    for row in (range(row_min_max[0],row_min_max[1],step_size)):
         # if row !=102:
         #     continue
         part=edge_mask[row,:].copy()
@@ -482,7 +249,7 @@ def mask_process(edge_mask):
     region_dict={}
     row_min_max=[invalid_width,height-invalid_width]  #* [20,460]
     col_min_max=[invalid_width,width-invalid_width]  #* [20,620]
-    for row in tqdm(range(row_min_max[0],row_min_max[1],1)):
+    for row in (range(row_min_max[0],row_min_max[1],1)):
         for col in range(col_min_max[0],col_min_max[1],1):
             if mask[row,col]>0 and mask[row+1,col]==0:
                 if sum(mask[row+1:row+step_size,col])>0:
@@ -491,7 +258,7 @@ def mask_process(edge_mask):
     return mask
 
 scan_folder='/home/zhujun/MVS/data/scannet/scans_test/scene0707_00'
-ref_view=139
+ref_view=0
 src_view=143
 imgpath=os.path.join(scan_folder,'images/edge_detect/{:0>8}.jpg'.format(ref_view))
 imgpath2=os.path.join(scan_folder,'images/edge_detect/{:0>8}.jpg'.format(src_view))
@@ -503,7 +270,14 @@ height,width=img_gray.shape
 grad_mask_save_dir=os.path.join(scan_folder,'images/edge_detect','grad')
 
 #! 轮廓检测
+start = time.time()
 mask,img=row_edge_detect(img)
+print(time.time()-start)
+start = time.time()
+mask_test,img_test=test_edge_detect(img)
+print(time.time()-start)
+start = time.time()
+
 #* 加入提取的直线
 ref_lines_file_path=os.path.join(scan_folder, 'images/save_lines/{:0>8}_lines.txt'.format(ref_view))
 ref_lines = np.loadtxt(ref_lines_file_path,delimiter=',')
@@ -512,11 +286,26 @@ for i in range(ref_lines.shape[0]):
     ptStart = tuple(ref_lines[i,0:2].astype(np.int32))
     ptEnd = tuple(ref_lines[i,2:].astype(np.int32))
     cv2.line(line_mask, ptStart, ptEnd, 255,2)
+line_mask_test=line_mask.copy()
 line_mask[mask>0]=255
+line_mask_test[mask_test>0]=255
+print(time.time()-start)
+start = time.time()
+
 #* 轮廓连接
 line_mask=mask_process(line_mask)
-# plt.figure()
-# plt.imshow(line_mask)
+line_mask_test=mask_process(line_mask_test)
+print(time.time()-start)
+start = time.time()
+region_mask,region_dict=region_detect(line_mask)
+print(time.time()-start)
+start = time.time()
+plt.figure()
+plt.imshow(line_mask)
+plt.figure()
+plt.imshow(line_mask_test)
+plt.show()
+exit()
 
 #! 区域检测
 region_mask,region_dict=region_detect(line_mask)

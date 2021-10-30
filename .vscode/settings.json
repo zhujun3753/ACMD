@@ -64,6 +64,9 @@
         "__hash_table": "cpp",
         "__split_buffer": "cpp",
         "__tree": "cpp",
-        "ios": "cpp"
+        "ios": "cpp",
+        "*.ipp": "cpp",
+        "__bit_reference": "cpp",
+        "__locale": "cpp"
     }
 }

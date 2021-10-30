@@ -44,6 +44,7 @@ struct PatchMatchParams {
     bool geom_consistency = false;
     bool multi_geometry = false;
     bool planar_prior = false;
+    bool edge_detect = false; //* new
 };
 
 class ACMP {
@@ -55,6 +56,7 @@ public:
     void Colmap2MVS(const std::string &dense_folder, std::vector<Problem> &problems);
     void CudaSpaceInitialization(const std::string &dense_folder, const Problem &problem);
     void RunPatchMatch();
+    void edge_detect();
     void SetGeomConsistencyParams(bool multi_geometry);
     void SetPlanarPriorParams();
     int GetReferenceImageWidth();
@@ -74,8 +76,10 @@ private:
     std::vector<cv::Mat> images;
     std::vector<cv::Mat> depths;
     std::vector<Camera> cameras;
+    std::vector<cv::Mat> masks; //* new
     cudaTextureObjects texture_objects_host;
     cudaTextureObjects texture_depths_host;
+    cudaTextureObjects texture_masks_host; //* new
     float4 *plane_hypotheses_host;
     float *costs_host;
     float4 *prior_planes_host;
@@ -85,8 +89,10 @@ private:
     Camera *cameras_cuda;
     cudaArray *cuArray[MAX_IMAGES];
     cudaArray *cuDepthArray[MAX_IMAGES];
+    cudaArray *cuMaskArray[MAX_IMAGES]; //* new
     cudaTextureObjects *texture_objects_cuda;
     cudaTextureObjects *texture_depths_cuda;
+    cudaTextureObjects *texture_masks_cuda; //* new
     float4 *plane_hypotheses_cuda;
     float *costs_cuda;
     curandState *rand_states_cuda;
