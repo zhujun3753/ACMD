@@ -4,6 +4,7 @@
 #* 2.把文件添加到版本库中
 git add . #* 添加到暂存区里面去，.表示添加当前目录下的全部文件
 git commit -m "change"
+git push origin main
 
 #* 创建SSH Key
 # ssh-keygen  -t rsa -C "zhujun3753@163.com"
