@@ -10,6 +10,14 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import copy
 import time
+from numba import cuda
+import math
+import sys
+from data_io import *
+from plyfile import PlyData, PlyElement
+
+
+
 # read an image
 def read_img(filename,denoising=False):
     # img = Image.open(filename) #! RGB
@@ -243,10 +251,7 @@ def mask_process(edge_mask):
     w=1
     step_size=10
     mask=edge_mask.copy()
-    rect=False
     invalid_width=20
-    region_index=0
-    region_dict={}
     row_min_max=[invalid_width,height-invalid_width]  #* [20,460]
     col_min_max=[invalid_width,width-invalid_width]  #* [20,620]
     for row in (range(row_min_max[0],row_min_max[1],1)):
@@ -254,12 +259,64 @@ def mask_process(edge_mask):
             if mask[row,col]>0 and mask[row+1,col]==0:
                 if sum(mask[row+1:row+step_size,col])>0:
                     mask[row+1:row+step_size,col]=255
-        
     return mask
+
+@cuda.jit
+def gen_mask_points(edge_mask,mask_points):
+    step_size=10
+    height,width=edge_mask.shape
+    invalid_width=20
+    row = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
+    col = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
+    if row<height-invalid_width and row>invalid_width and col < width-invalid_width and col>invalid_width:
+        if edge_mask[row,col]>0 and edge_mask[row+1,col]==0:
+            sum_result=0
+            for i in range(1,step_size):
+                sum_result+=edge_mask[row+i,col]
+                # if edge_mask[row+i,col]>0:
+                #     print(sum_result)
+            if sum_result>0:
+                mask_points[row, col] = 1
+
+@cuda.jit
+def link_mask_points(mask_points,final_mask):
+    step_size=10
+    height,width=mask_points.shape
+    invalid_width=20
+    row = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
+    col = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
+    if row<height-invalid_width and row>invalid_width and col < width-invalid_width and col>invalid_width:
+        sum_result=0
+        for i in range(1,step_size):
+            sum_result+=mask_points[row-i,col]
+        if sum_result>0:
+            final_mask[row, col] =255
+
+def mask_process_gpu(edge_mask):
+    BLOCK_SIZE=16
+    edge_mask_device = cuda.to_device(edge_mask)
+    mask_points=np.zeros_like(edge_mask)
+    mask_points_device = cuda.to_device(mask_points)
+
+    # 执行配置
+    threads_per_block = (BLOCK_SIZE, BLOCK_SIZE)
+    blocks_per_grid_x = int(math.ceil(edge_mask.shape[0] / BLOCK_SIZE))
+    blocks_per_grid_y = int(math.ceil(edge_mask.shape[1] / BLOCK_SIZE))
+    blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
+
+    # start = time.time()
+    gen_mask_points[blocks_per_grid, threads_per_block](edge_mask_device, mask_points_device)
+    cuda.synchronize()
+    link_mask_points[blocks_per_grid, threads_per_block](mask_points_device, edge_mask_device)
+    cuda.synchronize()
+    mask_points = edge_mask_device.copy_to_host()
+    cuda.synchronize()
+    # print("matmul time :" + str(time.time() - start))
+    return mask_points
 
 scan_folder='/home/zhujun/MVS/data/scannet/scans_test/scene0707_00'
 ref_view=0
-src_view=143
+src_view=20
 imgpath=os.path.join(scan_folder,'images/edge_detect/{:0>8}.jpg'.format(ref_view))
 imgpath2=os.path.join(scan_folder,'images/edge_detect/{:0>8}.jpg'.format(src_view))
 img=cv2.imread(imgpath)
@@ -270,13 +327,8 @@ height,width=img_gray.shape
 grad_mask_save_dir=os.path.join(scan_folder,'images/edge_detect','grad')
 
 #! 轮廓检测
-start = time.time()
-mask,img=row_edge_detect(img)
-print(time.time()-start)
-start = time.time()
-mask_test,img_test=test_edge_detect(img)
-print(time.time()-start)
-start = time.time()
+mask,img=test_edge_detect(img)
+
 
 #* 加入提取的直线
 ref_lines_file_path=os.path.join(scan_folder, 'images/save_lines/{:0>8}_lines.txt'.format(ref_view))
@@ -288,24 +340,17 @@ for i in range(ref_lines.shape[0]):
     cv2.line(line_mask, ptStart, ptEnd, 255,2)
 line_mask_test=line_mask.copy()
 line_mask[mask>0]=255
-line_mask_test[mask_test>0]=255
-print(time.time()-start)
-start = time.time()
 
 #* 轮廓连接
 line_mask=mask_process(line_mask)
-line_mask_test=mask_process(line_mask_test)
-print(time.time()-start)
-start = time.time()
-region_mask,region_dict=region_detect(line_mask)
-print(time.time()-start)
-start = time.time()
-plt.figure()
-plt.imshow(line_mask)
-plt.figure()
-plt.imshow(line_mask_test)
-plt.show()
-exit()
+# line_mask_test=mask_process_gpu(line_mask_test)
+# print('gpu ',time.time()-start)
+# start = time.time()
+
+# plt.figure()
+# plt.imshow(line_mask)
+# plt.show()
+# exit()
 
 #! 区域检测
 region_mask,region_dict=region_detect(line_mask)
@@ -315,8 +360,9 @@ mask_color[region_mask==0]=[0,0,0]
 plt.figure()
 plt.imshow(region_mask)
 
-region_index=7
-img[region_mask==region_index]=[200,0,0]
+region_index=1
+img_region=img.copy()
+img_region[region_mask==region_index]=[200,0,0]
 #! 单应矩阵计算
 mask_p0=np.array(region_dict[region_index]).reshape(-1,1,2).astype(np.float32)
 p0=mask_p0.copy()
@@ -361,28 +407,68 @@ savedir='/home/zhujun/MVS/data/scannet/scans_test/scene0707_00/images/edge_detec
 good_new_kp = [cv2.KeyPoint(good_new_sparse[i][0], good_new_sparse[i][1], 1) for i in range(good_new_sparse.shape[0])]
 good_old_kp = [cv2.KeyPoint(good_old_sparse[i][0], good_old_sparse[i][1], 1) for i in range(good_old_sparse.shape[0])]
 matches=[cv2.DMatch(i,i,0) for i in range(len(good_new_sparse))]
-mathcing=cv2.drawMatches(img,good_old_kp,img2,good_new_kp,matches,None)
+mathcing=cv2.drawMatches(img_region,good_old_kp,img2,good_new_kp,matches,None)
 plt.figure()
 plt.imshow(mathcing)
 plt.draw()
 img_name=os.path.join(savedir,'mathcing.png')
 plt.savefig(img_name)
-plt.show()
+# plt.show()
 # pdb.set_trace()
 
 # plt.show()
-# H, mask = cv2.findHomography(good_new_sparse, good_old_sparse, cv2.RANSAC,5.0)
-# wrap = cv2.warpPerspective(img2, H, (img2.shape[1]+img2.shape[1] , img2.shape[0]+img2.shape[0]))
-# img1=cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
-# wrap[0:img2.shape[0], 0:img2.shape[1]] = (wrap[0:img2.shape[0], 0:img2.shape[1]]*0.5).astype(np.uint8)+ (img1*0.5).astype(np.uint8)
-# rows, cols = np.where(wrap[:,:,0] !=0)
-# min_row, max_row = min(rows), max(rows) +1
-# min_col, max_col = min(cols), max(cols) +1
-# result = wrap[min_row:max_row,min_col:max_col,:]#去除黑色无用部分
-# plt.figure()
-# plt.imshow(result)
-# pdb.set_trace()
-# plt.show()
+H, mask = cv2.findHomography(good_new_sparse, good_old_sparse, cv2.RANSAC,5.0)
+wrap = cv2.warpPerspective(img2, H, (img2.shape[1]+img2.shape[1] , img2.shape[0]+img2.shape[0]))
+img1=cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
+wrap[0:img2.shape[0], 0:img2.shape[1]] = (wrap[0:img2.shape[0], 0:img2.shape[1]]*0.5).astype(np.uint8)+ (img1*0.5).astype(np.uint8)
+rows, cols = np.where(wrap[:,:,0] !=0)
+min_row, max_row = min(rows), max(rows) +1
+min_col, max_col = min(cols), max(cols) +1
+result = wrap[min_row:max_row,min_col:max_col,:]#去除黑色无用部分
+plt.figure()
+plt.imshow(result)
+
+ref_depth_gt = read_pfm(os.path.join(scan_folder,'depth/{:0>8}.pfm'.format(ref_view)))[0]
+ref_depth_gt=np.squeeze(ref_depth_gt)
+ref_intrinsics, ref_extrinsics = read_cam_file(os.path.join(scan_folder,'cams_1/{:0>8}_cam.txt'.format(ref_view)))[0:2]
+src_intrinsics, src_extrinsics = read_cam_file(os.path.join(scan_folder,'cams_1/{:0>8}_cam.txt'.format(src_view)))[0:2]
+
+
+
+
+
+save_dir=os.path.join(scan_folder, 'images/edge_detect/single_depth_comp')
+os.makedirs(save_dir, exist_ok=True)
+plyfilename=os.path.join(save_dir,f'view_{ref_view}_frame_part.ply')
+vertexs = []
+vertex_colors = []
+height, width = ref_depth_gt.shape[:2]
+x_grid, y_grid = np.meshgrid(np.arange(0, width), np.arange(0, height))
+valid_points=region_mask!=region_index
+x, y = x_grid[valid_points], y_grid[valid_points]
+img=cv2.cvtColor(img,cv2.COLOR_RGB2BGR)
+color = img[valid_points]
+depth = ref_depth_gt[valid_points]
+xyz_ref = np.matmul(np.linalg.inv(ref_intrinsics), np.vstack((x, y, np.ones_like(x))) * depth)
+xyz_world = np.matmul(np.linalg.inv(ref_extrinsics), np.vstack((xyz_ref, np.ones_like(x))))[:3]
+vertexs.append(xyz_world.transpose((1, 0)))
+vertex_colors.append((color).astype(np.uint8))
+
+vertexs = np.concatenate(vertexs, axis=0) #* [N，3]
+vertex_colors = np.concatenate(vertex_colors, axis=0) #* [N，3]
+vertexs = np.array([tuple(v) for v in vertexs], dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+vertex_colors = np.array([tuple(v) for v in vertex_colors], dtype=[('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]) # u1 uint8
+vertex_all = np.empty(len(vertexs), vertexs.dtype.descr + vertex_colors.dtype.descr)
+for prop in vertexs.dtype.names:
+    vertex_all[prop] = vertexs[prop]
+for prop in vertex_colors.dtype.names:
+    vertex_all[prop] = vertex_colors[prop]
+el = PlyElement.describe(vertex_all, 'vertex')
+PlyData([el]).write(plyfilename)
+print("saving the final model to", plyfilename)
+
+pdb.set_trace()
+plt.show()
 exit()
 # draw the tracks
 color = np.random.randint(0, 255, (len(p0), 3))

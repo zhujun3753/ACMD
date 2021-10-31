@@ -58,8 +58,8 @@ set(CMAKE_MAKEFILE_OUTPUTS
 set(CMAKE_MAKEFILE_PRODUCTS
   "CMakeFiles/ACMP.dir/ACMP_generated_ACMP.cu.o.cmake.pre-gen"
   "CMakeFiles/gauss_filter.dir/gauss_filter_generated_gauss_filter.cu.o.cmake.pre-gen"
-  "CMakeFiles/ACMP.dir/ACMP_generated_ACMP.cu.o.cmake"
-  "CMakeFiles/gauss_filter.dir/gauss_filter_generated_gauss_filter.cu.o.cmake"
+  "CMakeFiles/ACMP.dir/ACMP_generated_ACMP.cu.o.Debug.cmake"
+  "CMakeFiles/gauss_filter.dir/gauss_filter_generated_gauss_filter.cu.o.Debug.cmake"
   "CMakeFiles/CMakeDirectoryInformation.cmake"
   )
 

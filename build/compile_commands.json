@@ -1,0 +1,12 @@
+[
+{
+  "directory": "/home/zhujun/MVS/ACMP/build",
+  "command": "/usr/bin/x86_64-linux-gnu-g++-7   -isystem /usr/local/include -isystem /usr/local/include/opencv -I/home/zhujun/MVS/ACMP/. -I/usr/local/cuda/include   -fopenmp -g   -std=c++11 -pthread -Wall -Wextra -pedantic -Wno-unused-function -Wno-switch -o CMakeFiles/ACMP.dir/ACMP.cpp.o -c /home/zhujun/MVS/ACMP/ACMP.cpp",
+  "file": "/home/zhujun/MVS/ACMP/ACMP.cpp"
+},
+{
+  "directory": "/home/zhujun/MVS/ACMP/build",
+  "command": "/usr/bin/x86_64-linux-gnu-g++-7   -isystem /usr/local/include -isystem /usr/local/include/opencv -I/home/zhujun/MVS/ACMP/. -I/usr/local/cuda/include   -fopenmp -g   -std=c++11 -pthread -Wall -Wextra -pedantic -Wno-unused-function -Wno-switch -o CMakeFiles/ACMP.dir/main.cpp.o -c /home/zhujun/MVS/ACMP/main.cpp",
+  "file": "/home/zhujun/MVS/ACMP/main.cpp"
+}
+]
