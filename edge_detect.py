@@ -19,7 +19,7 @@ import math
 import sys
 from data_io import *
 from plyfile import PlyData, PlyElement
-
+from scipy import stats
 
 
 # read an image
@@ -248,9 +248,9 @@ def get_region_edge_points(region_mask,img,region_index):
     edge_points=np.array(edge_points).reshape(-1,2)
     return edge_points,edge_mask
 
-def edge_lines_detect(edge_points,edge_mask):
-#* 边界直线检测
-#! 对于开环线
+def gen_edge_curves(edge_points,edge_mask):
+    #* 边界点连续曲线
+    #! 对于开环线
     height,width=region_mask.shape
 
     end_points=[]
@@ -265,7 +265,7 @@ def edge_lines_detect(edge_points,edge_mask):
                 # if np.sum(edge_mask[row-1:row+2,col-1:col+2])>=4:
                 #     print([col,row])
     # print(end_points)
-    lines=[]
+    curves=[]
     if len(end_points)>0:
         for end_p in end_points:
             # print(end_p)
@@ -300,7 +300,7 @@ def edge_lines_detect(edge_points,edge_mask):
                             find_flag=True
                             break
             if len(line)>edge_points.shape[0]*0.1 or 0:
-                lines.append(line)
+                curves.append(line)
     #! 对于闭环线
     start_p=[]
     for p in edge_points:
@@ -341,11 +341,109 @@ def edge_lines_detect(edge_points,edge_mask):
                         find_flag=True
                         break
         if len(line)>edge_points.shape[0]*0.1 or 0:
-            lines.append(line)
-    return lines
+            curves.append(line)
+    curves=[np.array(curve).reshape(-1,2) for curve in curves]
+    return curves
+
+def curve_detect_lines(curve):
+    #* 曲线直线检测
+    # curve_index=range(0,len(curve),3)
+    # curve=curve[curve_index,:]
+    line_l=len(curve)
+    point_vectors=np.zeros_like(curve,dtype=np.float32)
+    cos_vect=np.zeros((line_l,),dtype=np.float32)
+    point_vectors[:-1,:]=curve[1:,:]-curve[:-1,:]
+    # pdb.set_trace()
+    cos_vect[:-1]=point_vectors[:-1,0]/np.sqrt(np.sum(point_vectors[:-1,:]*point_vectors[:-1,:],1))
+    cos_vect[-1]=cos_vect[-2]
+    diff_cos=np.zeros((line_l,),dtype=np.float32)
+    diff_cos[:-1]=abs(cos_vect[1:]-cos_vect[:-1])
+    diff_cos[diff_cos<0.3]=0
+    valid_index=diff_cos==0
+    start_flag=False
+    valid_seg=[]
+    for i in range(len(valid_index)):
+        if valid_index[i] and not start_flag:
+            start_i=i
+            start_flag=True
+            continue
+        if (start_flag and not valid_index[i]) or (i==len(valid_index)-1 and start_flag):
+            end_i=i
+            start_flag=False
+            if end_i-start_i<len(valid_index)*0.05:
+                valid_index[start_i:end_i]=False
+            else:
+                valid_seg.append([start_i,end_i])
+
+    return valid_seg
+
+def line_adjust(curve,valid_seg,img_gray,prt=True,save_dir=None):
+    new_lines=[]
+    img_gray_copy=img_gray.copy()
+    fit_error=np.zeros((len(valid_seg)),dtype=np.float32)
+    for valid_seg_index in range(len(valid_seg)):
+        #* 直线位置微调
+        line_seg=curve[valid_seg[valid_seg_index][0]:valid_seg[valid_seg_index][1]]
+        z1=np.polyfit(line_seg[:,1], line_seg[:,0], 1)
+        line_seg_fit=[[int(z1[0]*p[1]+z1[1]),p[1]] for p in line_seg]
+        #* 超过70度就要考虑换一个角度了
+        if abs(z1[0])>2.7:
+            z1=np.polyfit(line_seg[:,0], line_seg[:,1], 1)
+            line_seg_fit=[[p[0],int(z1[0]*p[0]+z1[1])] for p in line_seg]
+            z1=1/z1
+        
+        line_seg_fit=np.array(line_seg_fit).reshape(-1,2)
+        gap=np.sum(line_seg_fit-line_seg,1).astype(np.float32)
+        fit_error[valid_seg_index]=np.sum(gap*gap)/len(gap)
+        # print(z1,fit_error[valid_seg_index])
+        line_seg_fit_ver_vect=np.array([1/np.sqrt(z1[0]*z1[0]+1),-z1[0]/np.sqrt(z1[0]*z1[0]+1)])
+
+        img_gray_f32=img_gray.astype(np.float32)
+        step_max=9
+        thed=10
+        delta_i=[]
+        for point in line_seg_fit:
+            current=img_gray_f32[point[1],point[0]]
+            add_i=0
+            for i in range(1,step_max+1):
+                up_new_point=point+line_seg_fit_ver_vect*i
+                up_new_point=[int(up_new_point[0]),int(up_new_point[1])]
+                low_new_point=point-line_seg_fit_ver_vect*i
+                low_new_point=[int(low_new_point[0]),int(low_new_point[1])]
+                upper=abs(img_gray_f32[up_new_point[1],up_new_point[0]]-current)
+                lower=abs(img_gray_f32[low_new_point[1],low_new_point[0]]-current)
+                if upper>lower and upper>thed:
+                    point[:]=up_new_point
+                    add_i=i
+                    break
+                if lower>upper and lower>thed:
+                    point[:]=low_new_point
+                    add_i=i
+                    break
+            delta_i.append(add_i)
+        z2=np.polyfit(line_seg_fit[:,1], line_seg_fit[:,0], 1)
+        line_seg_fit2=[[int(z2[0]*p[1]+z2[1]),p[1]] for p in line_seg_fit]
+        if abs(z2[0])>2.7:
+            z2=np.polyfit(line_seg_fit[:,0], line_seg_fit[:,1], 1)
+            line_seg_fit2=[[p[0],int(z2[0]*p[0]+z2[1])] for p in line_seg_fit]
+            z2=1/z2
+        line_seg_fit2=np.array(line_seg_fit2).reshape(-1,2)
+        new_lines.append(line_seg_fit2)
+        if prt:
+            for point in line_seg_fit2:
+                cv2.circle(img_gray_copy, (int(point[0]),int(point[1])), 1, (255,0,0), 0)
+    if prt:
+        plt.figure()
+        plt.imshow(img_gray_copy,cmap ='gray')
+        
+        if save_dir:
+            plt.savefig(os.path.join(save_dir,'直线微调原始'),dpi=720)
+        plt.show()
+    return new_lines,fit_error.tolist()
+
 
 scan_folder='/home/zhujun/MVS/data/scannet/scans_test/scene0707_00'
-ref_view=0
+ref_view=29
 src_view=29
 imgpath=os.path.join(scan_folder,'images/edge_detect/{:0>8}.jpg'.format(ref_view))
 imgpath2=os.path.join(scan_folder,'images/edge_detect/{:0>8}.jpg'.format(src_view))
@@ -362,229 +460,45 @@ mask_color=cv2.applyColorMap(cv2.convertScaleAbs(region_mask.astype(np.float32)/
 mask_color[region_mask==0]=[0,0,0]
 mask_color2=cv2.applyColorMap(cv2.convertScaleAbs(region_mask2.astype(np.float32)/region_mask2.max()*255,alpha=1),cv2.COLORMAP_JET)
 mask_color2[region_mask2==0]=[0,0,0]
-save_dir='/home/zhujun/MVS/data/scannet/scans_test/scene0707_00/images/edge_detect/边界分割'
+save_dir='/home/zhujun/MVS/data/scannet/scans_test/scene0707_00/images/edge_detect/边界直线提取及微调'
 
 region_index=1
+#* 边缘点提取
 edge_points,edge_mask=get_region_edge_points(region_mask,img,region_index)
-lines=edge_lines_detect(edge_points,edge_mask)
+#* 边缘点连续曲线
+curves=gen_edge_curves(edge_points,edge_mask)
 
-# #* 边界直线检测
-# #! 对于开环线
-# end_points=[]
-# invalid_width=22
-# row_min_max=[invalid_width,height-invalid_width]  #* [20,460]
-# col_min_max=[invalid_width,width-invalid_width]  #* [20,620]
-# for row in (range(row_min_max[0],row_min_max[1],1)):
-#     for col in (range(col_min_max[0],col_min_max[1],1)):
-#         if edge_mask[row,col]==1:
-#             if np.sum(edge_mask[row-1:row+2,col-1:col+2])==2:
-#                 end_points.append([col,row])
-#             # if np.sum(edge_mask[row-1:row+2,col-1:col+2])>=4:
-#             #     print([col,row])
-# # print(end_points)
-# lines=[]
-# if len(end_points)>0:
-#     for end_p in end_points:
-#         # print(end_p)
-#         line=[]
-#         line.append(end_p)
-#         edge_mask[end_p[1],end_p[0]]=0
-#         row_p,col_p=end_p[1],end_p[0]
-#         while(np.sum(edge_mask[row_p-1:row_p+2,col_p-1:col_p+2])>0):
-#             last_p=line[-2] if len(line)>2 else [col_p,row_p-1]
-#             cols=[col_p+(col_p-last_p[0]),col_p-0,col_p-0,col_p-1,col_p+1]
-#             rows=[row_p+(row_p-last_p[1]),row_p+1,row_p-1,row_p-0,row_p-0]
-#             find_flag=False
-#             for row,col in zip(rows,cols):
-#                 if edge_mask[row,col]==1:
-#                     edge_mask[row,col]=0
-#                     if np.sum(edge_mask[row-1:row+2,col-1:col+2])>0:
-#                         row_p,col_p=row,col
-#                         line.append([col,row])
-#                         find_flag=True
-#                         break
-#             if find_flag:
-#                 continue
-#             cols=[col_p+(col_p-last_p[0]),col_p+1,col_p-1,col_p-1,col_p+1]
-#             rows=[row_p+(row_p-last_p[1]),row_p+1,row_p-1,row_p+1,row_p-1]
-#             find_flag=False
-#             for row,col in zip(rows,cols):
-#                 if edge_mask[row,col]==1:
-#                     edge_mask[row,col]=0
-#                     if np.sum(edge_mask[row-1:row+2,col-1:col+2])>0:
-#                         row_p,col_p=row,col
-#                         line.append([col,row])
-#                         find_flag=True
-#                         break
-#         if len(line)>edge_points.shape[0]*0.1 or 0:
-#             lines.append(line)
-# #! 对于闭环线
-# start_p=[]
-# for p in edge_points:
-#     if edge_mask[p[1],p[0]]==1:
-#         if np.sum(edge_mask[p[1]-1:p[1]+2,p[0]-1:p[0]+2])==3:
-#             start_p=p
-#             break
-# if len(start_p)>0 and np.sum(edge_mask)>edge_points.shape[0]*0.2:
-#     line=[]
-#     line.append(start_p)
-#     edge_mask[start_p[1],start_p[0]]=0
-#     row_p,col_p=start_p[1],start_p[0]
-#     while(np.sum(edge_mask[row_p-1:row_p+2,col_p-1:col_p+2])>0):
-#         last_p=line[-2] if len(line)>2 else [col_p,row_p-1]
-#         cols=[col_p+(col_p-last_p[0]),col_p-0,col_p-0,col_p-1,col_p+1]
-#         rows=[row_p+(row_p-last_p[1]),row_p+1,row_p-1,row_p-0,row_p-0]
-#         find_flag=False
-#         for row,col in zip(rows,cols):
-#             if edge_mask[row,col]==1:
-#                 edge_mask[row,col]=0
-#                 if np.sum(edge_mask[row-1:row+2,col-1:col+2])>0:
-#                     row_p,col_p=row,col
-#                     line.append([col,row])
-#                     find_flag=True
-#                     break
-
-#         if find_flag:
-#             continue
-#         cols=[col_p+(col_p-last_p[0]),col_p+1,col_p-1,col_p-1,col_p+1]
-#         rows=[row_p+(row_p-last_p[1]),row_p+1,row_p-1,row_p+1,row_p-1]
-#         find_flag=False
-#         for row,col in zip(rows,cols):
-#             if edge_mask[row,col]==1:
-#                 edge_mask[row,col]=0
-#                 if np.sum(edge_mask[row-1:row+2,col-1:col+2])>0:
-#                     row_p,col_p=row,col
-#                     line.append([col,row])
-#                     find_flag=True
-#                     break
-#     if len(line)>edge_points.shape[0]*0.1 or 0:
-#         lines.append(line)
-
-
-print('len lines: ',len(lines))
+print('len curves: ',len(curves))
 plt.figure()
-for line in lines:
-    line=np.array(line).reshape(-1,2)
-    plt.plot(line[:,0],line[:,1])
-    print(len(line))
-line=lines[0]
-line_l=len(line)
-line=np.array(line).reshape(-1,2)
+for curve in curves:
+    plt.plot(curve[:,0],curve[:,1])
+# plt.savefig(os.path.join(save_dir,'边界曲线'),dpi=720)
+region_lines=[]
+region_lines_fit_error=[]
+for curve in curves:
+    plt.figure()
+    curve_index=range(0,len(curve),10)
+    sparse_curve=curve[curve_index,:]
+    plt.plot(sparse_curve[:,0],sparse_curve[:,1])
+    # plt.savefig(os.path.join(save_dir,'稀疏边界曲线'),dpi=720)
+    #* 曲线直线检测
+    sparse_valid_seg=curve_detect_lines(sparse_curve)
+    valid_seg=[]
+    plt.figure()
+    for seg in sparse_valid_seg:
+        start_i,end_i=seg
+        start_i,end_i=curve_index[start_i],curve_index[end_i]
+        valid_seg.append([start_i,end_i])
+        plt.plot(curve[start_i:end_i,0],curve[start_i:end_i,1])
+    # plt.savefig(os.path.join(save_dir,'直线检测'),dpi=720)
+    #* 直线微调
+    new_lines,fit_error=line_adjust(curve,valid_seg,img_gray)
+    region_lines=region_lines+new_lines
+    region_lines_fit_error=region_lines_fit_error+fit_error
+print(region_lines_fit_error)
 
-dir_x=np.gradient(line[:,0])
-dir_x[abs(dir_x)<=0.5]=0
-dir_y=np.gradient(line[:,1])
-dir_y[abs(dir_y)<=0.5]=0
 
-dir_lx=dir_x.copy()
-dir_ly=dir_y.copy()
 
-step_size=10
-from scipy import stats
-
-for i in range(step_size,line_l-step_size):
-    nums=dir_x[i-step_size:i+step_size]
-    nums1=dir_x[i-step_size:i]
-    nums2=dir_x[i:i+step_size]
-    mode1=stats.mode(nums1)[0][0]
-    mode2=stats.mode(nums2)[0][0]
-    if mode1==mode2 and dir_x[i]!=mode1:
-        if np.sum(nums==mode1)>step_size*2*0.8:
-            dir_lx[i]=mode1
-for i in range(step_size,line_l-step_size):
-    nums=dir_y[i-step_size:i+step_size]
-    nums1=dir_y[i-step_size:i]
-    nums2=dir_y[i:i+step_size]
-    mode1=stats.mode(nums1)[0][0]
-    mode2=stats.mode(nums2)[0][0]
-    if mode1==mode2 and dir_y[i]!=mode1:
-        if np.sum(nums==mode1)>step_size*2*0.8:
-            dir_ly[i]=mode1
-
-valid_index=np.logical_and(np.gradient(dir_lx)==0,np.gradient(dir_ly)==0)
-start_flag=False
-valid_seg=[]
-for i in range(len(valid_index)):
-    if valid_index[i] and not start_flag:
-        start_i=i
-        start_flag=True
-        continue
-    if (start_flag and not valid_index[i]) or (i==len(valid_index)-1 and start_flag):
-        end_i=i
-        start_flag=False
-        if end_i-start_i<len(valid_index)*0.05:
-            valid_index[start_i:end_i]=False
-        else:
-            valid_seg.append([start_i,end_i])
-
-print(valid_seg)
-plt.figure()
-for seg in valid_seg:
-    start_i,end_i=seg
-    # print(end_i-start_i)
-    plt.plot(line[start_i:end_i,0],line[start_i:end_i,1])
-
-# plt.figure()
-# plt.plot(valid_index)
-# plt.savefig(os.path.join(save_dir,'有效index'),dpi=720)
-valid_seg_index=0
-line_seg=line[valid_seg[valid_seg_index][0]:valid_seg[valid_seg_index][1]]
-line_region=np.zeros_like(img_gray,dtype=np.uint8)
-line_region_mask=np.zeros_like(img_gray,dtype=bool)
-img_gray_blur=cv2.GaussianBlur(img_gray,(5,5),20)
-sobelx64f = cv2.Sobel(img_gray_blur,cv2.CV_64F,1,0,ksize=5)
-abs_sobel64f = np.absolute(sobelx64f)
-sobel_8u = np.uint8(abs_sobel64f)
-line_region_grad=np.zeros_like(img_gray,dtype=np.uint8)
-z1=np.polyfit(line_seg[:,1], line_seg[:,0], 1)
-line_seg_fit=[[int(z1[0]*p[1]+z1[1]),p[1]] for p in line_seg]
-line_seg_fit=np.array(line_seg_fit).reshape(-1,2)
-line_seg_fit_ver_vect=np.array([1/np.sqrt(z1[0]*z1[0]+1),-z1[0]/np.sqrt(z1[0]*z1[0]+1)])
-
-img_gray_copy=img_gray.copy()
-for point in line_seg_fit:
-    cv2.circle(img_gray_copy, (int(point[0]),int(point[1])), 1, (255,0,0), 0)
-plt.figure()
-plt.imshow(img_gray_copy,cmap ='gray')
-
-img_gray_f32=img_gray.astype(np.float32)
-step_max=5
-thed=10
-delta_i=[]
-for point in line_seg_fit:
-    current=img_gray_f32[point[1],point[0]]
-    add_i=0
-    for i in range(1,step_max+1):
-        up_new_point=point+line_seg_fit_ver_vect*i
-        up_new_point=[int(up_new_point[0]),int(up_new_point[1])]
-        low_new_point=point-line_seg_fit_ver_vect*i
-        low_new_point=[int(low_new_point[0]),int(low_new_point[1])]
-        upper=abs(img_gray_f32[up_new_point[1],up_new_point[0]]-current)
-        lower=abs(img_gray_f32[low_new_point[1],low_new_point[0]]-current)
-        if upper>lower and upper>thed:
-            point[:]=up_new_point
-            add_i=i
-            break
-        if lower>upper and lower>thed:
-            point[:]=low_new_point
-            add_i=i
-            break
-    delta_i.append(add_i)
-z2=np.polyfit(line_seg_fit[:,1], line_seg_fit[:,0], 1)
-line_seg_fit2=[[int(z2[0]*p[1]+z2[1]),p[1]] for p in line_seg_fit]
-line_seg_fit2=np.array(line_seg_fit2).reshape(-1,2)
-
-# pdb.set_trace()
-# plt.figure()
-# plt.plot(line_seg[:,1],line_seg[:,0],label='line')
-# plt.plot(line_seg_fit[:,1],line_seg_fit[:,0],label='fit')
-# plt.legend()
-for point in line_seg_fit2:
-    cv2.circle(img_gray, (int(point[0]),int(point[1])), 1, (255,0,0), 0)
-plt.figure()
-plt.imshow(img_gray,cmap ='gray')
-
-plt.show()
 exit()
 
 # pdb.set_trace()
